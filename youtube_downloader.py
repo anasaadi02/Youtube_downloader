@@ -8,36 +8,99 @@ from pathlib import Path
 def get_downloads_folder():
     """Get the Downloads folder path for the current user."""
     home = Path.home()
-    downloads_folder = home / "Desktop/videos"
+    downloads_folder = home / "Downloads"
     return str(downloads_folder)
+
+def clean_youtube_url(url):
+    """Clean and validate YouTube URL."""
+    import re
+    
+    # Remove extra parameters that might cause issues
+    if '&' in url:
+        url = url.split('&')[0]
+    
+    # Ensure it's a valid YouTube URL
+    youtube_patterns = [
+        r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
+        r'(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+    ]
+    
+    for pattern in youtube_patterns:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            return f"https://www.youtube.com/watch?v={video_id}"
+    
+    return url  # Return original if no pattern matches
 
 def get_video_info(url):
     """Get video information without downloading."""
     ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,  # Show warnings for debugging
+        'no_warnings': False,
+        'extract_flat': False,
+        'socket_timeout': 30,  # 30 second timeout
+        'retries': 3,  # Retry up to 3 times
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return True, info
+            if info:
+                return True, info
+            else:
+                return False, "No video information found"
     except Exception as e:
-        return False, str(e)
+        error_msg = str(e)
+        # Provide more specific error messages
+        if "Private video" in error_msg:
+            return False, "This video is private and cannot be accessed"
+        elif "Video unavailable" in error_msg:
+            return False, "This video is unavailable (may be deleted or restricted)"
+        elif "Sign in to confirm your age" in error_msg:
+            return False, "This video is age-restricted and requires sign-in"
+        elif "Video not available" in error_msg:
+            return False, "This video is not available in your region"
+        elif "HTTP Error 403" in error_msg:
+            return False, "Access denied - video may be restricted"
+        elif "HTTP Error 404" in error_msg:
+            return False, "Video not found - may be deleted or URL is incorrect"
+        elif "timeout" in error_msg.lower():
+            return False, "Request timed out - video may be unavailable or slow to load"
+        else:
+            return False, f"Error: {error_msg}"
 
-def download_video(url, output_folder, start_time=None, end_time=None):
+def download_video(url, output_folder, start_time=None, end_time=None, audio_only=False):
     """Download YouTube video using yt-dlp with specified options."""
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
-        'outtmpl': os.path.join(output_folder, '%(title)s.%(ext)s'),
-        'noplaylist': True,
-        'writesubtitles': False,
-        'writeautomaticsub': False,
-        'ignoreerrors': False,
-        'no_warnings': False,
-        'extract_flat': False,
-    }
+    if audio_only:
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': os.path.join(output_folder, '%(title)s.%(ext)s'),
+            'noplaylist': True,
+            'writesubtitles': False,
+            'writeautomaticsub': False,
+            'ignoreerrors': False,
+            'no_warnings': False,
+            'extract_flat': False,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '320',
+            }],
+        }
+    else:
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'outtmpl': os.path.join(output_folder, '%(title)s.%(ext)s'),
+            'noplaylist': True,
+            'writesubtitles': False,
+            'writeautomaticsub': False,
+            'ignoreerrors': False,
+            'no_warnings': False,
+            'extract_flat': False,
+        }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -56,10 +119,11 @@ def download_video(url, output_folder, start_time=None, end_time=None):
             # Download the video
             ydl.download([url])
             
-            # Find the downloaded file - look for .mp4 files
+            # Find the downloaded file - look for .mp4 or .mp3 files
+            file_extension = '.mp3' if audio_only else '.mp4'
             downloaded_files = []
             for file in os.listdir(output_folder):
-                if file.endswith('.mp4'):
+                if file.endswith(file_extension):
                     # Check if the filename contains the video title (with some flexibility)
                     title_clean = video_title.replace(' ', '').replace('｜', '').replace('|', '').lower()
                     file_clean = file.replace(' ', '').replace('｜', '').replace('|', '').lower()
@@ -88,19 +152,19 @@ def download_video(url, output_folder, start_time=None, end_time=None):
                 
                 return True, file_path, video_title, duration
             else:
-                # If no specific match, look for any recent MP4 files
+                # If no specific match, look for any recent files
                 import time
-                recent_mp4s = []
+                recent_files = []
                 current_time = time.time()
                 for file in os.listdir(output_folder):
-                    if file.endswith('.mp4'):
+                    if file.endswith(file_extension):
                         file_path = os.path.join(output_folder, file)
                         # Check if file was created in the last 5 minutes
                         if (current_time - os.path.getctime(file_path)) < 300:
-                            recent_mp4s.append(file_path)
+                            recent_files.append(file_path)
                 
-                if recent_mp4s:
-                    file_path = max(recent_mp4s, key=os.path.getctime)
+                if recent_files:
+                    file_path = max(recent_files, key=os.path.getctime)
                     
                     # If trimming is requested, use ffmpeg to trim the video
                     if start_time is not None and end_time is not None:
@@ -238,13 +302,24 @@ def main():
     if url and ("youtube.com" in url or "youtu.be" in url):
         if st.button("🔍 Get Video Info", type="secondary"):
             with st.spinner("Getting video information..."):
-                success, info = get_video_info(url)
+                # Clean the URL first
+                cleaned_url = clean_youtube_url(url)
+                if cleaned_url != url:
+                    st.info(f"🔧 Cleaned URL: {cleaned_url}")
+                
+                success, info = get_video_info(cleaned_url)
                 if success:
                     st.session_state.video_info = info
                     st.session_state.video_duration = info.get('duration', 0)
                     st.success("✅ Video information loaded!")
                 else:
                     st.error(f"❌ Failed to get video info: {info}")
+                    st.info("💡 Try these solutions:")
+                    st.markdown("- Check if the video is public and not age-restricted")
+                    st.markdown("- Try copying the URL again from YouTube")
+                    st.markdown("- Some videos may be region-blocked")
+    elif url and not ("youtube.com" in url or "youtu.be" in url):
+        st.warning("⚠️ Please enter a valid YouTube URL")
     
     # Display video preview and controls
     if st.session_state.video_info:
@@ -315,47 +390,63 @@ def main():
             # Download options
             st.subheader("📥 Download Options")
             
+            # Download type selection
+            download_type = st.radio(
+                "Choose download type:",
+                ["🎥 Video (MP4)", "🎵 Audio Only (MP3)"],
+                horizontal=True
+            )
+            
+            is_audio_only = download_type == "🎵 Audio Only (MP3)"
+            
             col_dl1, col_dl2 = st.columns(2)
             
             with col_dl1:
-                if st.button("🚀 Download Full Video", type="primary", use_container_width=True):
-                    with st.spinner("Downloading full video... Please wait."):
-                        success, result, title, _ = download_video(url, downloads_folder)
+                if st.button("🚀 Download Full", type="primary", use_container_width=True):
+                    with st.spinner(f"Downloading {'audio' if is_audio_only else 'video'}... Please wait."):
+                        success, result, title, _ = download_video(url, downloads_folder, audio_only=is_audio_only)
                     
                     if success:
-                        st.success(f"✅ Video downloaded successfully!")
+                        file_type = "Audio" if is_audio_only else "Video"
+                        st.success(f"✅ {file_type} downloaded successfully!")
                         st.info(f"**File saved as:** `{os.path.basename(result)}`")
                         st.info(f"**Location:** `{result}`")
+                        if is_audio_only:
+                            st.info("**Quality:** 320 kbps MP3")
                     else:
                         st.error(f"❌ Download failed: {result}")
             
             with col_dl2:
-                # Validate time inputs before allowing download
-                time_valid = True
-                if start_time >= end_time:
-                    st.warning("⚠️ End time must be greater than start time")
-                    time_valid = False
-                elif start_time < 0 or end_time < 0:
-                    st.warning("⚠️ Time values must be positive")
-                    time_valid = False
-                elif end_time > max_duration:
-                    st.warning(f"⚠️ End time exceeds video duration ({max_duration // 60}:{max_duration % 60:02d})")
-                    time_valid = False
-                
-                if st.button("✂️ Download Selected Part", type="primary", use_container_width=True, disabled=not time_valid):
-                    if time_valid:
-                        with st.spinner("Downloading and trimming video... Please wait."):
-                            success, result, title, _ = download_video(url, downloads_folder, start_time, end_time)
-                        
-                        if success:
-                            st.success(f"✅ Video clip downloaded successfully!")
-                            st.info(f"**File saved as:** `{os.path.basename(result)}`")
-                            st.info(f"**Location:** `{result}`")
-                            st.info(f"**Duration:** {clip_duration // 60}:{clip_duration % 60:02d}")
+                # Only show trimming for video downloads
+                if not is_audio_only:
+                    # Validate time inputs before allowing download
+                    time_valid = True
+                    if start_time >= end_time:
+                        st.warning("⚠️ End time must be greater than start time")
+                        time_valid = False
+                    elif start_time < 0 or end_time < 0:
+                        st.warning("⚠️ Time values must be positive")
+                        time_valid = False
+                    elif end_time > max_duration:
+                        st.warning(f"⚠️ End time exceeds video duration ({max_duration // 60}:{max_duration % 60:02d})")
+                        time_valid = False
+                    
+                    if st.button("✂️ Download Selected Part", type="primary", use_container_width=True, disabled=not time_valid):
+                        if time_valid:
+                            with st.spinner("Downloading and trimming video... Please wait."):
+                                success, result, title, _ = download_video(url, downloads_folder, start_time, end_time)
+                            
+                            if success:
+                                st.success(f"✅ Video clip downloaded successfully!")
+                                st.info(f"**File saved as:** `{os.path.basename(result)}`")
+                                st.info(f"**Location:** `{result}`")
+                                st.info(f"**Duration:** {clip_duration // 60}:{clip_duration % 60:02d}")
+                            else:
+                                st.error(f"❌ Download failed: {result}")
                         else:
-                            st.error(f"❌ Download failed: {result}")
-                    else:
-                        st.error("❌ Please fix the time inputs before downloading")
+                            st.error("❌ Please fix the time inputs before downloading")
+                else:
+                    st.info("🎵 Audio trimming not available - download full audio track")
     
     # Instructions
     st.markdown("---")
