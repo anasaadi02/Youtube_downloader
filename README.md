@@ -119,6 +119,3 @@ A powerful and user-friendly YouTube video downloader and trimmer built with Pyt
 - Ensure stable internet connection for large files
 - Close other bandwidth-intensive applications during download
 
-## License
-
-This project is open source and available under the MIT License.
